@@ -18,8 +18,8 @@ type ServerlessFunc struct {
 
 // FooSpec is the spec for a Foo resource
 type FooSpec struct {
-	DeploymentName string `json:"deploymentName"`
-	Replicas       *int32 `json:"replicas"`
+	Image    string `json:"image"`
+	Replicas *int32 `json:"replicas"`
 }
 
 // FooStatus is the status for a Foo resource

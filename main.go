@@ -213,7 +213,7 @@ func (c *Controller) syncHandler(key string) error {
 		return err
 	}
 
-	deploymentName := foo.Spec.DeploymentName
+	deploymentName := foo.Spec.Image
 	if deploymentName == "" {
 		// We choose to absorb the error here as the worker would requeue the
 		// resource otherwise. Instead, the next time the resource is updated
@@ -347,7 +347,7 @@ func newDeployment(foo *serverlessv1alpha1.ServerlessFunc) *appsv1.Deployment {
 	}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      foo.Spec.DeploymentName,
+			Name:      foo.Spec.Image,
 			Namespace: foo.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("Foo")),
