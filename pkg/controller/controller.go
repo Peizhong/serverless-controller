@@ -101,6 +101,7 @@ func NewController(
 	crdInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.enqueueCrd,
 		UpdateFunc: func(old, new interface{}) {
+			klog.Info("update crd")
 			controller.enqueueCrd(new)
 		},
 	})
@@ -255,6 +256,9 @@ func (c *Controller) syncHandler(key string) error {
 		return nil
 	}
 
+	klog.Info("bye for now, see you later")
+	return nil
+
 	// Get the deployment with the name specified in Foo.spec
 	deployment, err := c.deploymentsLister.Deployments(foo.Namespace).Get(deploymentName)
 	// If the resource doesn't exist, we'll create it
@@ -355,7 +359,7 @@ func (c *Controller) handleObject(obj interface{}) {
 	if ownerRef := metav1.GetControllerOf(object); ownerRef != nil {
 		// If this object is not owned by a Foo, we should not do anything more
 		// with it.
-		if ownerRef.Kind != "Foo" {
+		if ownerRef.Kind != "ServerlessFunc" {
 			return
 		}
 

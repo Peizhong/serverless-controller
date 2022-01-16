@@ -18,7 +18,8 @@ type ServerlessFunc struct {
 
 // FooSpec is the spec for a Foo resource
 type FooSpec struct {
-	Image    string `json:"image"`
+	Image    string `json:"image"`   // 可执行程序的名字
+	Version  string `json:"version"` // 版本不同时，会重新构建容器
 	Replicas *int32 `json:"replicas"`
 }
 

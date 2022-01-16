@@ -17,7 +17,9 @@ spec:
             spec:
               type: object
               properties:
-                deploymentName:
+                image:
+                  type: string
+                version:
                   type: string
                 replicas:
                   type: integer
