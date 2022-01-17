@@ -7,8 +7,11 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
@@ -26,6 +29,7 @@ import (
 	samplescheme "github.com/peizhong/serverless-controller/pkg/generated/clientset/versioned/scheme"
 	informers "github.com/peizhong/serverless-controller/pkg/generated/informers/externalversions/serverlesscontroller/v1alpha1"
 	listers "github.com/peizhong/serverless-controller/pkg/generated/listers/serverlesscontroller/v1alpha1"
+	"github.com/peizhong/serverless-controller/pkg/tools"
 )
 
 const controllerAgentName = "serverless-controller"
@@ -112,7 +116,11 @@ func NewController(
 	// handling Deployment resources. More info on this pattern:
 	// https://github.com/kubernetes/community/blob/8cafef897a22026d42f5e5bb3f104febe7e29830/contributors/devel/controllers.md
 	deploymentInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: controller.handleObject,
+		AddFunc: func(obj interface{}) {
+			klog.Info("i don't care deployments added")
+			return
+			controller.handleObject(obj)
+		},
 		UpdateFunc: func(old, new interface{}) {
 			newDepl := new.(*appsv1.Deployment)
 			oldDepl := old.(*appsv1.Deployment)
@@ -122,9 +130,14 @@ func NewController(
 				return
 			}
 			klog.Info("i don't care deployments changed")
+			return
 			controller.handleObject(new)
 		},
-		DeleteFunc: controller.handleObject,
+		DeleteFunc: func(obj interface{}) {
+			klog.Info("i don't care deployments added")
+			return
+			controller.handleObject(obj)
+		},
 	})
 
 	return controller
@@ -206,7 +219,8 @@ func (c *Controller) processNextWorkItem() bool {
 		if err := c.syncHandler(key); err != nil {
 			// Put the item back on the workqueue to handle any transient errors.
 			c.workqueue.AddRateLimited(key)
-			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
+			err = fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
+			klog.Info(err.Error())
 		}
 		// Finally, if no error occurs we Forget this item so it does not
 		// get queued again until another change happens.
@@ -247,18 +261,7 @@ func (c *Controller) syncHandler(key string) error {
 		return err
 	}
 
-	deploymentName := foo.Spec.Image
-	if deploymentName == "" {
-		// We choose to absorb the error here as the worker would requeue the
-		// resource otherwise. Instead, the next time the resource is updated
-		// the resource will be queued again.
-		utilruntime.HandleError(fmt.Errorf("%s: deployment name must be specified", key))
-		return nil
-	}
-
-	klog.Info("bye for now, see you later")
-	return nil
-
+	deploymentName := tools.GetDeploymentName(foo)
 	// Get the deployment with the name specified in Foo.spec
 	deployment, err := c.deploymentsLister.Deployments(foo.Namespace).Get(deploymentName)
 	// If the resource doesn't exist, we'll create it
@@ -284,8 +287,12 @@ func (c *Controller) syncHandler(key string) error {
 	// If this number of the replicas on the Foo resource is specified, and the
 	// number does not equal the current desired replicas on the Deployment, we
 	// should update the Deployment resource.
-	if foo.Spec.Replicas != nil && *foo.Spec.Replicas != *deployment.Spec.Replicas {
-		klog.V(4).Infof("Foo %s replicas: %d, deployment replicas: %d", name, *foo.Spec.Replicas, *deployment.Spec.Replicas)
+	klog.Infof("DiffServerlessFuncAndDeployment")
+	diff := tools.DiffServerlessFuncAndDeployment(foo, deployment)
+	if len(diff) > 0 {
+		for _, item := range diff {
+			klog.Infof("Foo: [%s].[%s] expect: %v, deployment: %v", foo.Name, item.Field, item.Left, item.Right)
+		}
 		deployment, err = c.kubeclientset.AppsV1().Deployments(foo.Namespace).Update(context.TODO(), newDeployment(foo), metav1.UpdateOptions{})
 	}
 
@@ -294,6 +301,18 @@ func (c *Controller) syncHandler(key string) error {
 	// temporary network failure, or any other transient reason.
 	if err != nil {
 		return err
+	}
+
+	{
+		// service
+		service, err := c.kubeclientset.CoreV1().Services(foo.Namespace).Get(context.TODO(), tools.GetServiceName(foo), metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			service, err = c.kubeclientset.CoreV1().Services(foo.Namespace).Create(context.TODO(), newService(foo), metav1.CreateOptions{})
+		}
+		if err != nil {
+			return err
+		}
+		klog.Info("create service", service.Name)
 	}
 
 	// Finally, we update the status block of the Foo resource to reflect the
@@ -374,24 +393,49 @@ func (c *Controller) handleObject(obj interface{}) {
 	}
 }
 
+var (
+	DefaultRevisionHistoryLimit int32 = 2
+	DefaultRunAsUser            int64 = 1000
+	DefaultRunAsGroup           int64 = 3000
+)
+
 // newDeployment creates a new Deployment for a Foo resource. It also sets
 // the appropriate OwnerReferences on the resource so handleObject can discover
 // the Foo resource that 'owns' it.
 func newDeployment(foo *serverlessv1alpha1.ServerlessFunc) *appsv1.Deployment {
 	labels := map[string]string{
-		"app":        "nginx",
-		"controller": foo.Name,
+		"serverlessfunc": tools.GetAppName(foo),
 	}
-	return &appsv1.Deployment{
+	resourceLimit := func(cpu, memory int) corev1.ResourceList {
+		resp := corev1.ResourceList{}
+		if cpu > 0 {
+			if limit, err := resource.ParseQuantity(fmt.Sprintf("%dm", cpu)); err == nil {
+				resp[corev1.ResourceCPU] = limit
+			}
+		}
+		if memory > 0 {
+			if limit, err := resource.ParseQuantity(fmt.Sprintf("%dMi", memory)); err == nil {
+				resp[corev1.ResourceMemory] = limit
+			}
+		}
+		return resp
+	}
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      foo.Spec.Image,
+			Name:      tools.GetDeploymentName(foo),
 			Namespace: foo.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("Foo")),
+				*metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("ServerlessFunc")),
+			},
+			Labels: map[string]string{
+				"serverlessfunc":         tools.GetAppName(foo),
+				"serverlessfunc-images":  foo.Spec.Image,
+				"serverlessfunc-version": foo.Spec.Version,
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: foo.Spec.Replicas,
+			Replicas:             foo.Spec.Replicas,
+			RevisionHistoryLimit: &DefaultRevisionHistoryLimit,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -400,14 +444,128 @@ func newDeployment(foo *serverlessv1alpha1.ServerlessFunc) *appsv1.Deployment {
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser:  &DefaultRunAsUser,
+						RunAsGroup: &DefaultRunAsGroup,
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "ide-workspaces",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: "ide-workspaces-pvc",
+								},
+							},
+						},
+					},
 					Containers: []corev1.Container{
 						{
-							Name:  "nginx",
-							Image: "nginx:latest",
+							Name:  "pilot",
+							Image: "localhost:32000/serverless-pilot:v0.0.1",
+							Env: []corev1.EnvVar{
+								{
+									Name:  "SERVERLESS_FUNC",
+									Value: foo.Name,
+								},
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "http",
+									ContainerPort: 8080,
+								},
+							},
+							LivenessProbe: &corev1.Probe{
+								Handler: corev1.Handler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/ping",
+										Port: intstr.Parse("8080"),
+									},
+								},
+								InitialDelaySeconds: 5,
+								PeriodSeconds:       30,
+							},
+							Resources: corev1.ResourceRequirements{
+								Limits: resourceLimit(10, 20),
+							},
+						}, {
+							Name:  "rpcserver",
+							Image: "localhost:32000/alpine:v0.0.1",
+							Env: []corev1.EnvVar{
+								{
+									Name:  "SERVERLESS_FUNC",
+									Value: foo.Name,
+								},
+							},
+							Command: []string{
+								fmt.Sprintf("/app/%s", foo.Spec.Image),
+								"-v",
+								foo.Spec.Version,
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "rpc",
+									ContainerPort: 30000,
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "ide-workspaces",
+									MountPath: "/app",
+									SubPath:   "serverless-functions",
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Limits: resourceLimit(20, 40),
+							},
 						},
 					},
 				},
 			},
+		},
+	}
+	return deployment
+}
+
+func newService(foo *serverlessv1alpha1.ServerlessFunc) *corev1.Service {
+	labels := map[string]string{
+		"serverlessfunc": tools.GetAppName(foo),
+	}
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tools.GetServiceName(foo),
+			Namespace: foo.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("ServerlessFunc")),
+			},
+			Labels: labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: labels,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "pilot",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       80,
+					TargetPort: intstr.Parse("8080"),
+				},
+			},
+		},
+	}
+}
+
+// newIngress should be one ingress
+func newIngress(foo *serverlessv1alpha1.ServerlessFunc) *networkingv1.Ingress {
+	labels := map[string]string{
+		"serverlessfunc": tools.GetAppName(foo),
+	}
+	return &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tools.GetServiceName(foo),
+			Namespace: foo.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("ServerlessFunc")),
+			},
+			Labels: labels,
 		},
 	}
 }
