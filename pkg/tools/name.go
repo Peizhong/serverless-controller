@@ -7,6 +7,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 )
 
+func GetIngressName() string {
+	return "serverless-ingress"
+}
+
+func GetIngressPath(foo *v1alpha1.ServerlessFunc) string {
+	return fmt.Sprintf("/serverlessfunc/%s(/|$)(.*)", foo.Name)
+}
+
 func GetAppName(foo *v1alpha1.ServerlessFunc) string {
 	return fmt.Sprintf("func-%s", foo.Name)
 }

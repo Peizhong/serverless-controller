@@ -315,6 +315,23 @@ func (c *Controller) syncHandler(key string) error {
 		klog.Info("create service", service.Name)
 	}
 
+	{
+		// ingress
+		ingress, err := c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Get(context.TODO(), tools.GetIngressName(), metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			// 创建已有ingress
+			ingress, err = c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Create(context.TODO(), newIngress(foo.Namespace), metav1.CreateOptions{})
+		}
+		if err != nil {
+			return nil
+		}
+		// 本次foo，更新到ingress
+		_, err = c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Update(context.TODO(), updateIngress(ingress, foo), metav1.UpdateOptions{})
+		if err != nil {
+			return nil
+		}
+	}
+
 	// Finally, we update the status block of the Foo resource to reflect the
 	// current state of the world
 	err = c.updateCrdStatus(foo, deployment)
@@ -554,18 +571,77 @@ func newService(foo *serverlessv1alpha1.ServerlessFunc) *corev1.Service {
 }
 
 // newIngress should be one ingress
-func newIngress(foo *serverlessv1alpha1.ServerlessFunc) *networkingv1.Ingress {
-	labels := map[string]string{
-		"serverlessfunc": tools.GetAppName(foo),
-	}
+func newIngress(namespace string) *networkingv1.Ingress {
+	labels := map[string]string{}
 	return &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tools.GetServiceName(foo),
-			Namespace: foo.Namespace,
+			Name:            tools.GetIngressName(),
+			Namespace:       namespace,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("ServerlessFunc")),
+				// *metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("ServerlessFunc")),
 			},
 			Labels: labels,
 		},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{
+				// 只用1个
+				{
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{},
+					},
+				},
+			},
+		},
 	}
+}
+
+func updateIngress(current *networkingv1.Ingress, foo *serverlessv1alpha1.ServerlessFunc) *networkingv1.Ingress {
+	result := current.DeepCopy()
+	if len(result.Spec.Rules) != 1 {
+		// 修复数据
+		return result
+	}
+	currentRule := current.Spec.Rules[0]
+	if currentRule.IngressRuleValue.HTTP == nil {
+		return result
+	}
+	newRule := currentRule.DeepCopy()
+	if len(newRule.HTTP.Paths) > 0 {
+		newRule.HTTP.Paths = newRule.HTTP.Paths[:0]
+	}
+	var updateExitRule bool
+	ingressPath := tools.GetIngressPath(foo)
+	for _, currentPath := range currentRule.IngressRuleValue.HTTP.Paths {
+		if currentPath.Path == ingressPath {
+			updateExitRule = true
+			updatePath := currentPath.DeepCopy()
+			updatePath.Backend.Service = &networkingv1.IngressServiceBackend{
+				Name: tools.GetServiceName(foo),
+				Port: networkingv1.ServiceBackendPort{
+					Number: 80,
+				},
+			}
+			newRule.HTTP.Paths = append(newRule.HTTP.Paths, *updatePath)
+		} else {
+			newRule.HTTP.Paths = append(newRule.HTTP.Paths, currentPath)
+		}
+	}
+	pathTypePrefix := networkingv1.PathTypePrefix
+	if !updateExitRule {
+		newRule.HTTP.Paths = append(newRule.HTTP.Paths, networkingv1.HTTPIngressPath{
+			Path:     ingressPath,
+			PathType: &pathTypePrefix,
+			Backend: networkingv1.IngressBackend{
+				Service: &networkingv1.IngressServiceBackend{
+					Name: tools.GetServiceName(foo),
+					Port: networkingv1.ServiceBackendPort{
+						Number: 80,
+					},
+				},
+			},
+		})
+	}
+	result.Spec.Rules = result.Spec.Rules[:0]
+	result.Spec.Rules = append(result.Spec.Rules, *newRule)
+	return result
 }
