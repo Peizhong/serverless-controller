@@ -7,7 +7,7 @@ import (
 )
 
 func GetIngressName() string {
-	return "serverless-ingress"
+	return "serverlessfunc-ingress"
 }
 
 func GetIngressPath(foo *v1alpha1.ServerlessFunc) string {

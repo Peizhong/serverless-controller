@@ -18,6 +18,7 @@ func TestTypes(t *testing.T) {
 	var defaultReplicas int32 = 1
 	serverlessFunc.Spec.Replicas = &defaultReplicas
 }
+
 func TestRun(t *testing.T) {
 	stopCh := make(chan struct{})
 	ctrl := FromLocalFile(stopCh)
@@ -55,8 +56,8 @@ func TestAddCrd(t *testing.T) {
 		panic(err)
 	}
 	var serverlessFunc v1alpha1.ServerlessFunc
-	serverlessFunc.Name = "nop"
-	serverlessFunc.Spec.Image = "hello"
+	serverlessFunc.Name = "hello"
+	serverlessFunc.Spec.Image = "nop"
 	var defaultReplicas int32 = 1
 	serverlessFunc.Spec.Replicas = &defaultReplicas
 	resp, err := crdClientSet.ServerlesscontrollerV1alpha1().ServerlessFuncs("default").Create(context.Background(), &serverlessFunc, v1.CreateOptions{})

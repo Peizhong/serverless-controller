@@ -307,25 +307,30 @@ func (c *Controller) syncHandler(key string) error {
 		// service
 		service, err := c.kubeclientset.CoreV1().Services(foo.Namespace).Get(context.TODO(), tools.GetServiceName(foo), metav1.GetOptions{})
 		if errors.IsNotFound(err) {
+			klog.Info("create service ", service.Name)
 			service, err = c.kubeclientset.CoreV1().Services(foo.Namespace).Create(context.TODO(), newService(foo), metav1.CreateOptions{})
 		}
 		if err != nil {
 			return err
 		}
-		klog.Info("create service", service.Name)
 	}
 
 	{
 		// ingress
 		ingress, err := c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Get(context.TODO(), tools.GetIngressName(), metav1.GetOptions{})
+		if err != nil {
+			klog.Infof("Get Ingresses err: %v", err.Error())
+		}
 		if errors.IsNotFound(err) {
 			// 创建已有ingress
 			ingress, err = c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Create(context.TODO(), newIngress(foo.Namespace), metav1.CreateOptions{})
 		}
 		if err != nil {
-			return nil
+			klog.Infof("Create Ingresses err: %v", err.Error())
+			return err
 		}
 		// 比较ingress是否不一致
+		klog.Infof("DiffServerlessFuncAndIngress")
 		diff = tools.DiffServerlessFuncAndIngress(foo, ingress)
 		if len(diff) > 0 {
 			for _, item := range diff {
@@ -334,7 +339,7 @@ func (c *Controller) syncHandler(key string) error {
 			// 本次foo，更新到ingress
 			_, err = c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Update(context.TODO(), updateIngress(ingress, foo), metav1.UpdateOptions{})
 			if err != nil {
-				return nil
+				return err
 			}
 		}
 	}
@@ -347,6 +352,8 @@ func (c *Controller) syncHandler(key string) error {
 	}
 
 	c.recorder.Event(foo, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
+
+	klog.Infof("syncHandler: %s complete", key)
 	return nil
 }
 
@@ -594,7 +601,10 @@ func newIngress(namespace string) *networkingv1.Ingress {
 				// 只用1个
 				{
 					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{},
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							// todo: 必须有值 spec.rules[0].http.paths: Required value
+							Paths: make([]networkingv1.HTTPIngressPath, 0),
+						},
 					},
 				},
 			},
