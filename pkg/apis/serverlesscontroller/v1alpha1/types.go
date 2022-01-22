@@ -24,6 +24,7 @@ type FooSpec struct {
 }
 
 // FooStatus is the status for a Foo resource
+// ServerlessFuncInterface.UpdateStatus
 type FooStatus struct {
 	AvailableReplicas int32 `json:"availableReplicas"`
 }

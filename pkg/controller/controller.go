@@ -325,10 +325,17 @@ func (c *Controller) syncHandler(key string) error {
 		if err != nil {
 			return nil
 		}
-		// 本次foo，更新到ingress
-		_, err = c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Update(context.TODO(), updateIngress(ingress, foo), metav1.UpdateOptions{})
-		if err != nil {
-			return nil
+		// 比较ingress是否不一致
+		diff = tools.DiffServerlessFuncAndIngress(foo, ingress)
+		if len(diff) > 0 {
+			for _, item := range diff {
+				klog.Infof("Foo: [%s].[%s] expect: %v, ingress: %v", foo.Name, item.Field, item.Left, item.Right)
+			}
+			// 本次foo，更新到ingress
+			_, err = c.kubeclientset.NetworkingV1().Ingresses(foo.Namespace).Update(context.TODO(), updateIngress(ingress, foo), metav1.UpdateOptions{})
+			if err != nil {
+				return nil
+			}
 		}
 	}
 
