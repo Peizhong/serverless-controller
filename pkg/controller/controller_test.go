@@ -21,10 +21,9 @@ import (
 	"testing"
 	"time"
 
-	samplecontroller "github.com/peizhong/serverless-controller/pkg/apis/serverlesscontroller/v1alpha1"
 	serverlessv1alpha1 "github.com/peizhong/serverless-controller/pkg/apis/serverlesscontroller/v1alpha1"
-	"github.com/peizhong/serverless-controller/pkg/generated/clientset/versioned/fake"
-	informers "github.com/peizhong/serverless-controller/pkg/generated/informers/externalversions"
+	crdfake "github.com/peizhong/serverless-controller/pkg/generated/clientset/versioned/fake"
+	crdinformers "github.com/peizhong/serverless-controller/pkg/generated/informers/externalversions"
 	"github.com/peizhong/serverless-controller/pkg/tools"
 	apps "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,10 +45,10 @@ var (
 type fixture struct {
 	t *testing.T
 
-	client     *fake.Clientset
+	crdclient  *crdfake.Clientset
 	kubeclient *k8sfake.Clientset
 	// Objects to put in the store.
-	fooLister        []*samplecontroller.ServerlessFunc
+	crdLister        []*serverlessv1alpha1.ServerlessFunc
 	deploymentLister []*apps.Deployment
 	// Actions expected to happen on the client.
 	kubeactions []core.Action
@@ -67,17 +66,17 @@ func newFixture(t *testing.T) *fixture {
 	return f
 }
 
-func newFoo(name string, replicas *int32) *samplecontroller.ServerlessFunc {
+func newFoo(name string, replicas *int32) *serverlessv1alpha1.ServerlessFunc {
 	labels := map[string]string{
-		"serverlessfunc": tools.GetAppName(&samplecontroller.ServerlessFunc{
+		"serverlessfunc": tools.GetAppName(&serverlessv1alpha1.ServerlessFunc{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: name,
 			},
 		}),
 	}
-	foo := &samplecontroller.ServerlessFunc{
+	foo := &serverlessv1alpha1.ServerlessFunc{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: samplecontroller.SchemeGroupVersion.String(),
+			APIVersion: serverlessv1alpha1.SchemeGroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -87,7 +86,7 @@ func newFoo(name string, replicas *int32) *samplecontroller.ServerlessFunc {
 				*metav1.NewControllerRef(&serverlessv1alpha1.ServerlessFunc{}, serverlessv1alpha1.SchemeGroupVersion.WithKind("ServerlessFunc")),
 			},
 		},
-		Spec: samplecontroller.FooSpec{
+		Spec: serverlessv1alpha1.FooSpec{
 			Image:    "nop",
 			Replicas: replicas,
 		},
@@ -95,21 +94,21 @@ func newFoo(name string, replicas *int32) *samplecontroller.ServerlessFunc {
 	return foo
 }
 
-func (f *fixture) newController() (*Controller, informers.SharedInformerFactory, kubeinformers.SharedInformerFactory) {
-	f.client = fake.NewSimpleClientset(f.objects...)
+func (f *fixture) newController() (*Controller, crdinformers.SharedInformerFactory, kubeinformers.SharedInformerFactory) {
+	f.crdclient = crdfake.NewSimpleClientset(f.objects...)
 	f.kubeclient = k8sfake.NewSimpleClientset(f.kubeobjects...)
 
-	i := informers.NewSharedInformerFactory(f.client, noResyncPeriodFunc())
+	i := crdinformers.NewSharedInformerFactory(f.crdclient, noResyncPeriodFunc())
 	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
-	c := NewController(f.kubeclient, f.client,
+	c := NewController(f.kubeclient, f.crdclient,
 		k8sI.Apps().V1().Deployments(), i.Serverlesscontroller().V1alpha1().ServerlessFuncs())
 
 	c.crdSynced = alwaysReady
 	c.deploymentsSynced = alwaysReady
 	c.recorder = &record.FakeRecorder{}
 
-	for _, f := range f.fooLister {
+	for _, f := range f.crdLister {
 		i.Serverlesscontroller().V1alpha1().ServerlessFuncs().Informer().GetIndexer().Add(f)
 	}
 
@@ -137,6 +136,7 @@ func (f *fixture) runController(fooName string, startInformers bool, expectError
 		k8sI.Start(stopCh)
 	}
 
+	// 一个crd资源
 	err := c.syncHandler(fooName)
 	if !expectError && err != nil {
 		f.t.Errorf("error syncing foo: %v", err)
@@ -144,7 +144,7 @@ func (f *fixture) runController(fooName string, startInformers bool, expectError
 		f.t.Error("expected error syncing foo, got nil")
 	}
 
-	actions := filterInformerActions(f.client.Actions())
+	actions := filterInformerActions(f.crdclient.Actions())
 	for i, action := range actions {
 		if len(f.actions) < i+1 {
 			f.t.Errorf("%d unexpected actions: %+v", len(actions)-len(f.actions), actions[i:])
@@ -229,8 +229,9 @@ func filterInformerActions(actions []core.Action) []core.Action {
 	ret := []core.Action{}
 	for _, action := range actions {
 		if len(action.GetNamespace()) == 0 &&
-			(action.Matches("list", "foos") ||
-				action.Matches("watch", "foos") ||
+			(action.Matches("list", "serverlessfuncs") ||
+				action.Matches("watch", "serverlessfuncs") ||
+				action.Matches("create", "serverlessfuncs") ||
 				action.Matches("list", "deployments") ||
 				action.Matches("watch", "deployments")) {
 			continue
@@ -249,12 +250,16 @@ func (f *fixture) expectUpdateDeploymentAction(d *apps.Deployment) {
 	f.kubeactions = append(f.kubeactions, core.NewUpdateAction(schema.GroupVersionResource{Resource: "deployments"}, d.Namespace, d))
 }
 
-func (f *fixture) expectUpdateFooStatusAction(foo *samplecontroller.ServerlessFunc) {
-	action := core.NewUpdateSubresourceAction(schema.GroupVersionResource{Resource: "foos"}, "status", foo.Namespace, foo)
+func (f *fixture) expectUpdateFooStatusAction(foo *serverlessv1alpha1.ServerlessFunc) {
+	action := core.NewUpdateSubresourceAction(schema.GroupVersionResource{
+		Group:    foo.GroupVersionKind().Group,
+		Version:  foo.GroupVersionKind().Version,
+		Resource: "serverlessfunc",
+	}, "", foo.Namespace, foo)
 	f.actions = append(f.actions, action)
 }
 
-func getKey(foo *samplecontroller.ServerlessFunc, t *testing.T) string {
+func getKey(foo *serverlessv1alpha1.ServerlessFunc, t *testing.T) string {
 	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(foo)
 	if err != nil {
 		t.Errorf("Unexpected error getting key for foo %v: %v", foo.Name, err)
@@ -267,11 +272,14 @@ func TestCreatesDeployment(t *testing.T) {
 	f := newFixture(t)
 	foo := newFoo("test", int32Ptr(1))
 
-	f.fooLister = append(f.fooLister, foo)
+	f.crdLister = append(f.crdLister, foo)
 	f.objects = append(f.objects, foo)
 
 	expDeployment := newDeployment(foo)
+
+	// 创建了deployment后，预期的动作
 	f.expectCreateDeploymentAction(expDeployment)
+	// ...后面有一堆，先不看了
 	// f.expectUpdateFooStatusAction(foo)
 
 	f.run(getKey(foo, t))
@@ -282,7 +290,7 @@ func TestDoNothing(t *testing.T) {
 	foo := newFoo("test", int32Ptr(1))
 	d := newDeployment(foo)
 
-	f.fooLister = append(f.fooLister, foo)
+	f.crdLister = append(f.crdLister, foo)
 	f.objects = append(f.objects, foo)
 	f.deploymentLister = append(f.deploymentLister, d)
 	f.kubeobjects = append(f.kubeobjects, d)
@@ -300,7 +308,7 @@ func TestUpdateDeployment(t *testing.T) {
 	foo.Spec.Replicas = int32Ptr(2)
 	expDeployment := newDeployment(foo)
 
-	f.fooLister = append(f.fooLister, foo)
+	f.crdLister = append(f.crdLister, foo)
 	f.objects = append(f.objects, foo)
 	f.deploymentLister = append(f.deploymentLister, d)
 	f.kubeobjects = append(f.kubeobjects, d)
@@ -317,7 +325,7 @@ func TestNotControlledByUs(t *testing.T) {
 
 	d.ObjectMeta.OwnerReferences = []metav1.OwnerReference{}
 
-	f.fooLister = append(f.fooLister, foo)
+	f.crdLister = append(f.crdLister, foo)
 	f.objects = append(f.objects, foo)
 	f.deploymentLister = append(f.deploymentLister, d)
 	f.kubeobjects = append(f.kubeobjects, d)
