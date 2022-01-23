@@ -108,6 +108,9 @@ func NewController(
 			klog.Info("update crd")
 			controller.enqueueCrd(new)
 		},
+		DeleteFunc: func(obj interface{}) {
+			klog.Info("delete crd")
+		},
 	})
 	// Set up an event handler for when Deployment resources change. This
 	// handler will lookup the owner of the given Deployment, and if it is
@@ -129,12 +132,12 @@ func NewController(
 				// Two different versions of the same Deployment will always have different RVs.
 				return
 			}
-			klog.Info("i don't care deployments changed")
+			klog.Info("i don't care deployments updated")
 			return
 			controller.handleObject(new)
 		},
 		DeleteFunc: func(obj interface{}) {
-			klog.Info("i don't care deployments added")
+			klog.Info("i don't care deployments deleted")
 			return
 			controller.handleObject(obj)
 		},
@@ -367,7 +370,7 @@ func (c *Controller) updateCrdStatus(foo *serverlessv1alpha1.ServerlessFunc, dep
 	// we must use Update instead of UpdateStatus to update the Status block of the Foo resource.
 	// UpdateStatus will not allow changes to the Spec of the resource,
 	// which is ideal for ensuring nothing other than resource status has been updated.
-	_, err := c.crdClientSet.ServerlesscontrollerV1alpha1().ServerlessFuncs(foo.Namespace).Update(context.TODO(), fooCopy, metav1.UpdateOptions{})
+	_, err := c.crdClientSet.ServerlesscontrollerV1alpha1().ServerlessFuncs(foo.Namespace).UpdateStatus(context.TODO(), fooCopy, metav1.UpdateOptions{})
 	return err
 }
 
@@ -455,6 +458,7 @@ func newDeployment(foo *serverlessv1alpha1.ServerlessFunc) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      tools.GetDeploymentName(foo),
 			Namespace: foo.Namespace,
+			// 根对象
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(foo, serverlessv1alpha1.SchemeGroupVersion.WithKind("ServerlessFunc")),
 			},
