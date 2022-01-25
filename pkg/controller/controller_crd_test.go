@@ -56,8 +56,8 @@ func TestAddCrd(t *testing.T) {
 		panic(err)
 	}
 	var serverlessFunc v1alpha1.ServerlessFunc
-	serverlessFunc.Name = "hello"
-	serverlessFunc.Spec.Image = "nop"
+	serverlessFunc.Name = "cpu-stress"
+	serverlessFunc.Spec.Image = "cpu_stress"
 	var defaultReplicas int32 = 1
 	serverlessFunc.Spec.Replicas = &defaultReplicas
 	resp, err := crdClientSet.ServerlesscontrollerV1alpha1().ServerlessFuncs("default").Create(context.Background(), &serverlessFunc, v1.CreateOptions{})
@@ -78,4 +78,19 @@ func TestGetCrd(t *testing.T) {
 		panic(err)
 	}
 	t.Log(resp.Name, resp.Spec.Image, *resp.Spec.Replicas)
+}
+
+func TestDeleteCrd(t *testing.T) {
+	restConfig := RestConfigFromLocal()
+	crdClientSet, err := versioned.NewForConfig(restConfig)
+	if err != nil {
+		panic(err)
+	}
+	propagationPolicy := v1.DeletePropagationForeground
+	err = crdClientSet.ServerlesscontrollerV1alpha1().ServerlessFuncs("default").Delete(context.Background(), "hello", v1.DeleteOptions{
+		PropagationPolicy: &propagationPolicy,
+	})
+	if err != nil {
+		panic(err)
+	}
 }

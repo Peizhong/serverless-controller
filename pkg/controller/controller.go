@@ -351,6 +351,7 @@ func (c *Controller) syncHandler(key string) error {
 	// current state of the world
 	err = c.updateCrdStatus(foo, deployment)
 	if err != nil {
+		err = fmt.Errorf("updateCrdStatus err: %v", err.Error())
 		return err
 	}
 
@@ -370,7 +371,10 @@ func (c *Controller) updateCrdStatus(foo *serverlessv1alpha1.ServerlessFunc, dep
 	// we must use Update instead of UpdateStatus to update the Status block of the Foo resource.
 	// UpdateStatus will not allow changes to the Spec of the resource,
 	// which is ideal for ensuring nothing other than resource status has been updated.
-	_, err := c.crdClientSet.ServerlesscontrollerV1alpha1().ServerlessFuncs(foo.Namespace).UpdateStatus(context.TODO(), fooCopy, metav1.UpdateOptions{})
+	_, err := c.crdClientSet.ServerlesscontrollerV1alpha1().ServerlessFuncs(foo.Namespace).Update(context.TODO(), fooCopy, metav1.UpdateOptions{})
+	if err != nil {
+		err = fmt.Errorf("update foo(%s/%s) err :%v", foo.Namespace, fooCopy.Name, err.Error())
+	}
 	return err
 }
 
